@@ -1,0 +1,73 @@
+import pandas as pd
+from sqlalchemy import create_engine
+import os
+import sqlite3
+
+print("🚀 Starting Day 2: Data Cleaning & Database Loading...")
+
+
+os.makedirs("data/processed", exist_ok=True)
+db_path = "sqlite:///bluestock_mf.db"
+engine = create_engine(db_path)
+
+
+print("Cleaning NAV History...")
+try:
+    df_nav = pd.read_csv("data/raw/nav_history.csv")
+    df_nav['date'] = pd.to_datetime(df_nav['date'], format='mixed')
+    df_nav = df_nav.sort_values(by=['scheme_code', 'date'])
+    # Forward-fill missing NAVs and drop duplicates
+    df_nav['nav'] = df_nav.groupby('scheme_code')['nav'].ffill()
+    df_nav = df_nav.drop_duplicates(subset=['scheme_code', 'date'])
+    # Validate NAV > 0
+    df_nav = df_nav[df_nav['nav'] > 0]
+    df_nav.to_csv("data/processed/nav_history_cleaned.csv", index=False)
+    df_nav.to_sql("fact_nav", engine, if_exists="replace", index=False)
+    print(f"✅ NAV History cleaned & loaded. Rows: {len(df_nav)}")
+except Exception as e:
+    print(f"⚠️ Error in NAV History: {e}")
+
+
+print("Cleaning Transactions...")
+try:
+    df_txn = pd.read_csv("data/raw/investor_transactions.csv")
+    # Standardise transaction_type
+    df_txn['transaction_type'] = df_txn['transaction_type'].str.upper().str.strip()
+    valid_types = ['SIP', 'LUMPSUM', 'REDEMPTION']
+    df_txn = df_txn[df_txn['transaction_type'].isin(valid_types)]
+    # Validate amount > 0 and fix dates
+    df_txn = df_txn[df_txn['amount'] > 0]
+    df_txn['transaction_date'] = pd.to_datetime(df_txn['transaction_date'], format='mixed')
+    # Check KYC status
+    valid_kyc = ['VERIFIED', 'PENDING', 'REJECTED']
+    df_txn['kyc_status'] = df_txn['kyc_status'].str.upper().str.strip()
+    df_txn = df_txn[df_txn['kyc_status'].isin(valid_kyc)]
+    
+    df_txn.to_csv("data/processed/investor_transactions_cleaned.csv", index=False)
+    df_txn.to_sql("fact_transactions", engine, if_exists="replace", index=False)
+    print(f"✅ Transactions cleaned & loaded. Rows: {len(df_txn)}")
+except Exception as e:
+    print(f"⚠️ Error in Transactions: {e}")
+
+
+print("Cleaning Scheme Performance...")
+try:
+    df_perf = pd.read_csv("data/raw/scheme_performance.csv")
+    # Validate numeric returns
+    return_cols = ['1y_return', '3y_return', '5y_return']
+    for col in return_cols:
+        df_perf[col] = pd.to_numeric(df_perf[col], errors='coerce')
+    
+    # Flag anomalies (Returns > 100% or < -99%)
+    df_perf['anomaly_flag'] = ((df_perf['1y_return'] > 100) | (df_perf['1y_return'] < -99)).astype(int)
+    
+    # Check expense_ratio range (0.1% - 2.5%)
+    df_perf = df_perf[(df_perf['expense_ratio'] >= 0.1) & (df_perf['expense_ratio'] <= 2.5)]
+    
+    df_perf.to_csv("data/processed/scheme_performance_cleaned.csv", index=False)
+    df_perf.to_sql("fact_performance", engine, if_exists="replace", index=False)
+    print(f"✅ Performance cleaned & loaded. Rows: {len(df_perf)}")
+except Exception as e:
+    print(f"⚠️ Error in Scheme Performance: {e}")
+
+print("\n🎉 Day 2 Data Processing Complete! Database 'bluestock_mf.db' created.")
